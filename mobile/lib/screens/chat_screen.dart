@@ -286,7 +286,7 @@ class _MessageBubble extends StatelessWidget {
         ),
         child: SelectableText(
           message.content,
-          textDirection: TextDirection.auto,
+          textDirection: TextDirection.rtl,
           style: const TextStyle(fontSize: 15, height: 1.5),
         ),
       ),
