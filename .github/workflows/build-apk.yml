@@ -23,6 +23,16 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
       - name: Generate Android platform files
         run: flutter create --platforms=android --org com.novaai .
 
@@ -48,8 +58,22 @@ jobs:
       - name: Analyze project
         run: flutter analyze lib --no-fatal-infos
 
-      - name: Build release APK
-        run: flutter build apk --release
+      - name: Build release APK (retry on repository rate limits)
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4; do
+            echo "APK build attempt $attempt of 4"
+            if flutter build apk --release; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((attempt * 30))
+              echo "Build failed. Waiting ${delay}s before retrying..."
+              sleep "$delay"
+            fi
+          done
+          echo "APK build failed after 4 attempts."
+          exit 1
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
