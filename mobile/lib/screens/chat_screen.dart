@@ -1,4 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 import '../models/chat_message.dart';
 import '../services/ai_service.dart';
 
@@ -10,12 +14,25 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> {
+  static const _storageKey = 'nova_ai_current_conversation_v1';
+
   final _service = AiService();
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
   final List<ChatMessage> _messages = [];
+
+  SharedPreferences? _preferences;
   bool _busy = false;
+  bool _loadingHistory = true;
+  bool _restoreContext = false;
+  bool _codingMode = false;
   double? _downloadProgress;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedConversation();
+  }
 
   @override
   void dispose() {
@@ -24,9 +41,85 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
+  Future<void> _loadSavedConversation() async {
+    try {
+      _preferences = await SharedPreferences.getInstance();
+      final saved = _preferences?.getString(_storageKey);
+      if (saved != null && saved.isNotEmpty) {
+        final decoded = jsonDecode(saved) as List<dynamic>;
+        final restored = decoded
+            .whereType<Map<String, dynamic>>()
+            .map((item) => ChatMessage(
+                  role: item['role'] as String? ?? 'assistant',
+                  content: item['content'] as String? ?? '',
+                ))
+            .where((message) => message.content.isNotEmpty)
+            .toList();
+        if (mounted) {
+          setState(() {
+            _messages
+              ..clear()
+              ..addAll(restored);
+            _restoreContext = restored.isNotEmpty;
+          });
+        }
+      }
+    } catch (_) {
+      // A damaged local history should not prevent the assistant from opening.
+    } finally {
+      if (mounted) setState(() => _loadingHistory = false);
+    }
+  }
+
+  Future<void> _saveConversation() async {
+    try {
+      _preferences ??= await SharedPreferences.getInstance();
+      await _preferences!.setString(
+        _storageKey,
+        jsonEncode(_messages.map((message) => message.toJson()).toList()),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تعذر حفظ المحادثة على الجهاز.')),
+      );
+    }
+  }
+
+  String _makePrompt(String currentMessage, List<ChatMessage> previous) {
+    final instructions = _codingMode
+        ? 'أنت NOVA AI، مساعد برمجة خبير. اشرح الحل بالعربية عندما يكتب المستخدم بالعربية. '
+            'اكتب أكواداً كاملة وصحيحة قدر الإمكان، واشرح أين توضع وكيف تُشغّل. '
+            'لا تدّعِ أنك نفذت أو اختبرت كوداً لم تنفذه فعلياً.\n\n'
+        : '';
+
+    if (!_restoreContext || previous.isEmpty) {
+      return '$instructions$currentMessage';
+    }
+
+    final recent = previous.length > 6
+        ? previous.sublist(previous.length - 6)
+        : previous;
+    final transcript = recent.map((message) {
+      final speaker = message.isUser ? 'المستخدم' : 'NOVA';
+      final excerpt = message.content.length > 420
+          ? message.content.substring(0, 420)
+          : message.content;
+      return '$speaker: $excerpt';
+    }).join('\n');
+
+    return '$instructions'
+        'هذا ملخص آخر رسائل المحادثة السابقة، استخدمه لفهم السياق ولا تعاود الإجابة عنها من البداية:\n'
+        '$transcript\n\n'
+        'الطلب الحالي للمستخدم: $currentMessage';
+  }
+
   Future<void> _send() async {
     final text = _controller.text.trim();
-    if (text.isEmpty || _busy) return;
+    if (text.isEmpty || _busy || _loadingHistory) return;
+
+    final previous = List<ChatMessage>.from(_messages);
+    final prompt = _makePrompt(text, previous);
 
     setState(() {
       _messages.add(ChatMessage(role: 'user', content: text));
@@ -34,11 +127,12 @@ class _ChatScreenState extends State<ChatScreen> {
       _downloadProgress = null;
       _controller.clear();
     });
+    await _saveConversation();
     _scrollToBottom();
 
     try {
       final reply = await _service.sendMessage(
-        text,
+        prompt,
         onDownloadProgress: (progress) {
           if (!mounted) return;
           setState(() => _downloadProgress = progress);
@@ -47,7 +141,9 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return;
       setState(() {
         _messages.add(ChatMessage(role: 'assistant', content: reply));
+        _restoreContext = false;
       });
+      await _saveConversation();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -57,6 +153,7 @@ class _ChatScreenState extends State<ChatScreen> {
               'تعذر تشغيل النموذج المحلي. في أول استخدام، اتصل بالإنترنت لتنزيل النموذج (حوالي 1.1 GB)، وتأكد من توفر مساحة كافية في الهاتف. بعد اكتمال التنزيل ستعمل المحادثات دون إنترنت.\n\nالتفاصيل: $error',
         ));
       });
+      await _saveConversation();
     } finally {
       if (mounted) {
         setState(() {
@@ -68,9 +165,14 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _newChat() {
+  Future<void> _newChat() async {
+    if (_busy) return;
     _service.resetChat();
-    setState(_messages.clear);
+    setState(() {
+      _messages.clear();
+      _restoreContext = false;
+    });
+    await _preferences?.remove(_storageKey);
   }
 
   void _scrollToBottom() {
@@ -103,20 +205,47 @@ class _ChatScreenState extends State<ChatScreen> {
               child: const Icon(Icons.auto_awesome, color: Colors.white),
             ),
             const SizedBox(width: 10),
-            const Column(
+            Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('NOVA AI', style: TextStyle(fontWeight: FontWeight.w800)),
-                Text('LOCAL MODEL • OFFLINE',
-                    style: TextStyle(fontSize: 9, letterSpacing: 1.2)),
+                const Text('NOVA AI',
+                    style: TextStyle(fontWeight: FontWeight.w800)),
+                Text(
+                  _codingMode ? 'مساعد برمجة • محلي' : 'LOCAL MODEL • OFFLINE',
+                  style: const TextStyle(fontSize: 9, letterSpacing: 1.0),
+                ),
               ],
             ),
           ],
         ),
         actions: [
+          PopupMenuButton<bool>(
+            tooltip: 'وضع المساعد',
+            initialValue: _codingMode,
+            onSelected: (value) => setState(() => _codingMode = value),
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: false,
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.chat_bubble_outline),
+                  title: Text('المساعد العام'),
+                ),
+              ),
+              PopupMenuItem(
+                value: true,
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.code),
+                  title: Text('مساعد البرمجة'),
+                ),
+              ),
+            ],
+            icon: const Icon(Icons.tune_rounded),
+          ),
           IconButton(
             tooltip: 'محادثة جديدة',
-            onPressed: _busy ? null : _newChat,
+            onPressed: _busy || _loadingHistory ? null : _newChat,
             icon: const Icon(Icons.add_comment_outlined),
           ),
         ],
@@ -124,19 +253,21 @@ class _ChatScreenState extends State<ChatScreen> {
       body: Column(
         children: [
           Expanded(
-            child: _messages.isEmpty
-                ? _welcome()
-                : ListView.builder(
-                    controller: _scrollController,
-                    padding: const EdgeInsets.fromLTRB(14, 16, 14, 20),
-                    itemCount: _messages.length + (_busy ? 1 : 0),
-                    itemBuilder: (context, index) {
-                      if (index == _messages.length) {
-                        return _TypingBubble(progress: _downloadProgress);
-                      }
-                      return _MessageBubble(message: _messages[index]);
-                    },
-                  ),
+            child: _loadingHistory
+                ? const Center(child: CircularProgressIndicator())
+                : _messages.isEmpty
+                    ? _welcome()
+                    : ListView.builder(
+                        controller: _scrollController,
+                        padding: const EdgeInsets.fromLTRB(14, 16, 14, 20),
+                        itemCount: _messages.length + (_busy ? 1 : 0),
+                        itemBuilder: (context, index) {
+                          if (index == _messages.length) {
+                            return _TypingBubble(progress: _downloadProgress);
+                          }
+                          return _MessageBubble(message: _messages[index]);
+                        },
+                      ),
           ),
           SafeArea(
             top: false,
@@ -148,13 +279,16 @@ class _ChatScreenState extends State<ChatScreen> {
                   Expanded(
                     child: TextField(
                       controller: _controller,
+                      enabled: !_loadingHistory,
                       minLines: 1,
                       maxLines: 5,
                       textInputAction: TextInputAction.send,
                       onSubmitted: (_) => _send(),
-                      decoration: const InputDecoration(
-                        hintText: 'اكتب رسالتك إلى NOVA...',
-                        contentPadding: EdgeInsets.symmetric(
+                      decoration: InputDecoration(
+                        hintText: _codingMode
+                            ? 'اكتب سؤالاً برمجياً إلى NOVA...'
+                            : 'اكتب رسالتك إلى NOVA...',
+                        contentPadding: const EdgeInsets.symmetric(
                             horizontal: 18, vertical: 14),
                       ),
                     ),
@@ -164,7 +298,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     height: 52,
                     width: 52,
                     child: FilledButton(
-                      onPressed: _busy ? null : _send,
+                      onPressed: _busy || _loadingHistory ? null : _send,
                       style: FilledButton.styleFrom(
                         padding: EdgeInsets.zero,
                         shape: RoundedRectangleBorder(
@@ -212,7 +346,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
             const SizedBox(height: 10),
             Text(
-              'ذكاء اصطناعي يعمل مباشرة على هاتفك. لا سيرفر، لا مفاتيح API، وخصوصية أكبر.',
+              'مساعدك المحلي الخاص. محادثاتك تُحفظ على هذا الجهاز، ويمكنك اختيار وضع مساعد البرمجة من القائمة بالأعلى.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.white.withValues(alpha: 0.65)),
             ),
@@ -227,11 +361,11 @@ class _ChatScreenState extends State<ChatScreen> {
               child: const Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(Icons.download_rounded, color: Color(0xFF22D3EE)),
+                  Icon(Icons.lock_outline, color: Color(0xFF22D3EE)),
                   SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      'عند أول رسالة، نزّل النموذج مرة واحدة عبر Wi-Fi (حوالي 1.1 GB). بعد ذلك يمكنك استخدام NOVA دون إنترنت.',
+                      'حفظ المحادثات يتم محلياً على هاتفك، ولا نرسلها إلى خادم. تنزيل النموذج يحتاج إلى الإنترنت في أول مرة فقط.',
                       style: TextStyle(fontSize: 13, height: 1.5),
                     ),
                   ),
