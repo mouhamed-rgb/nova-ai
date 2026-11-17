@@ -1,16 +1,15 @@
 name: nova_ai_mobile
-description: NOVA AI mobile client for a self-hosted open-source language model.
+description: NOVA AI - private offline AI assistant powered by an on-device open model.
 publish_to: "none"
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
-  sdk: ">=3.4.0 <4.0.0"
+  sdk: ">=3.10.7 <4.0.0"
 
 dependencies:
   flutter:
     sdk: flutter
-  http: ^1.2.2
-  shared_preferences: ^2.3.2
+  llamadart: ^0.19.11
 
 dev_dependencies:
   flutter_test:
@@ -19,3 +18,8 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+hooks:
+  user_defines:
+    llamadart:
+      llamadart_native_runtimes: [llama_cpp]
