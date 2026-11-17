@@ -20,7 +20,7 @@ class AiService {
       onProgress: (progress) {
         final fraction = progress.fraction;
         if (fraction != null) {
-          onProgress?.call(fraction.clamp(0.0, 1.0));
+          onProgress?.call(fraction.clamp(0.0, 1.0).toDouble());
         }
       },
     );
