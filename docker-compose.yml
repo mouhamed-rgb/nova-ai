@@ -1,0 +1,27 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: nova-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+
+  api:
+    build:
+      context: ./server
+    container_name: nova-api
+    restart: unless-stopped
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: qwen2.5:3b
+      REQUEST_TIMEOUT: "240"
+      ALLOWED_ORIGINS: "*"
+    depends_on:
+      - ollama
+    ports:
+      - "8000:8000"
+
+volumes:
+  ollama_data:
