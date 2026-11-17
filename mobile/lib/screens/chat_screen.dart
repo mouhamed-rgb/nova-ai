@@ -15,6 +15,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final _scrollController = ScrollController();
   final List<ChatMessage> _messages = [];
   bool _busy = false;
+  double? _downloadProgress;
 
   @override
   void dispose() {
@@ -30,12 +31,19 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _messages.add(ChatMessage(role: 'user', content: text));
       _busy = true;
+      _downloadProgress = null;
       _controller.clear();
     });
     _scrollToBottom();
 
     try {
-      final reply = await _service.sendMessage(_messages);
+      final reply = await _service.sendMessage(
+        text,
+        onDownloadProgress: (progress) {
+          if (!mounted) return;
+          setState(() => _downloadProgress = progress);
+        },
+      );
       if (!mounted) return;
       setState(() {
         _messages.add(ChatMessage(role: 'assistant', content: reply));
@@ -45,15 +53,24 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() {
         _messages.add(ChatMessage(
           role: 'assistant',
-          content: 'تعذر الاتصال بالسيرفر. تحقق من عنوان السيرفر واتصال الإنترنت.\n\nالتفاصيل: $error',
+          content:
+              'تعذر تشغيل النموذج المحلي. في أول استخدام، اتصل بالإنترنت لتنزيل النموذج (حوالي 1.1 GB)، وتأكد من توفر مساحة كافية في الهاتف. بعد اكتمال التنزيل ستعمل المحادثات دون إنترنت.\n\nالتفاصيل: $error',
         ));
       });
     } finally {
       if (mounted) {
-        setState(() => _busy = false);
+        setState(() {
+          _busy = false;
+          _downloadProgress = null;
+        });
         _scrollToBottom();
       }
     }
+  }
+
+  void _newChat() {
+    _service.resetChat();
+    setState(_messages.clear);
   }
 
   void _scrollToBottom() {
@@ -66,53 +83,6 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       }
     });
-  }
-
-  Future<void> _showServerSettings() async {
-    final current = await _service.getServerUrl();
-    if (!mounted) return;
-    final controller = TextEditingController(text: current);
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF171A2B),
-      builder: (context) => Padding(
-        padding: EdgeInsets.fromLTRB(
-          20, 24, 20, MediaQuery.of(context).viewInsets.bottom + 24,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('إعدادات السيرفر',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            const Text('أدخل رابط HTTPS للسيرفر المنشور. أثناء التطوير استخدم عنوان الخادم المحلي المناسب.'),
-            const SizedBox(height: 14),
-            TextField(
-              controller: controller,
-              keyboardType: TextInputType.url,
-              decoration: const InputDecoration(
-                hintText: 'https://your-server.example.com',
-                labelText: 'Server URL',
-              ),
-            ),
-            const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                onPressed: () async {
-                  await _service.setServerUrl(controller.text);
-                  if (context.mounted) Navigator.pop(context);
-                },
-                child: const Text('حفظ العنوان'),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-    controller.dispose();
   }
 
   @override
@@ -137,21 +107,16 @@ class _ChatScreenState extends State<ChatScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('NOVA AI', style: TextStyle(fontWeight: FontWeight.w800)),
-                Text('OPEN MODEL • ONLINE',
-                    style: TextStyle(fontSize: 9, letterSpacing: 1.4)),
+                Text('LOCAL MODEL • OFFLINE',
+                    style: TextStyle(fontSize: 9, letterSpacing: 1.2)),
               ],
             ),
           ],
         ),
         actions: [
           IconButton(
-            tooltip: 'إعدادات السيرفر',
-            onPressed: _showServerSettings,
-            icon: const Icon(Icons.tune_rounded),
-          ),
-          IconButton(
             tooltip: 'محادثة جديدة',
-            onPressed: () => setState(_messages.clear),
+            onPressed: _busy ? null : _newChat,
             icon: const Icon(Icons.add_comment_outlined),
           ),
         ],
@@ -167,7 +132,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     itemCount: _messages.length + (_busy ? 1 : 0),
                     itemBuilder: (context, index) {
                       if (index == _messages.length) {
-                        return const _TypingBubble();
+                        return _TypingBubble(progress: _downloadProgress);
                       }
                       return _MessageBubble(message: _messages[index]);
                     },
@@ -247,15 +212,31 @@ class _ChatScreenState extends State<ChatScreen> {
                 style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
             const SizedBox(height: 10),
             Text(
-              'مساعدك الذكي المدعوم بنموذج مفتوح المصدر على سيرفر خاص.',
+              'ذكاء اصطناعي يعمل مباشرة على هاتفك. لا سيرفر، لا مفاتيح API، وخصوصية أكبر.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.white.withValues(alpha: 0.65)),
             ),
-            const SizedBox(height: 20),
-            OutlinedButton.icon(
-              onPressed: _showServerSettings,
-              icon: const Icon(Icons.settings_ethernet),
-              label: const Text('إعداد عنوان السيرفر'),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFF191D30),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
+              ),
+              child: const Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.download_rounded, color: Color(0xFF22D3EE)),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'عند أول رسالة، نزّل النموذج مرة واحدة عبر Wi-Fi (حوالي 1.1 GB). بعد ذلك يمكنك استخدام NOVA دون إنترنت.',
+                      style: TextStyle(fontSize: 13, height: 1.5),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -272,7 +253,9 @@ class _MessageBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final user = message.isUser;
     return Align(
-      alignment: user ? AlignmentDirectional.centerEnd : AlignmentDirectional.centerStart,
+      alignment: user
+          ? AlignmentDirectional.centerEnd
+          : AlignmentDirectional.centerStart,
       child: Container(
         constraints: const BoxConstraints(maxWidth: 330),
         margin: const EdgeInsets.only(bottom: 12),
@@ -281,7 +264,9 @@ class _MessageBubble extends StatelessWidget {
           color: user ? const Color(0xFF5140A5) : const Color(0xFF191D30),
           borderRadius: BorderRadius.circular(18),
           border: Border.all(
-            color: user ? Colors.transparent : Colors.white.withValues(alpha: 0.06),
+            color: user
+                ? Colors.transparent
+                : Colors.white.withValues(alpha: 0.06),
           ),
         ),
         child: SelectableText(
@@ -295,21 +280,29 @@ class _MessageBubble extends StatelessWidget {
 }
 
 class _TypingBubble extends StatelessWidget {
-  const _TypingBubble();
+  const _TypingBubble({this.progress});
+  final double? progress;
 
   @override
   Widget build(BuildContext context) {
-    return const Align(
+    final downloading = progress != null;
+    final label = downloading
+        ? 'تنزيل النموذج ${((progress! * 100).round())}%'
+        : 'NOVA يفكر...';
+
+    return Align(
       alignment: AlignmentDirectional.centerStart,
       child: Padding(
-        padding: EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.only(bottom: 12),
         child: Chip(
-          avatar: SizedBox(
-            width: 14,
-            height: 14,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-          label: Text('NOVA يفكر...'),
+          avatar: downloading
+              ? const Icon(Icons.download_rounded, size: 17)
+              : const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+          label: Text(label),
         ),
       ),
     );
