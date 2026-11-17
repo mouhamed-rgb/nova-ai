@@ -26,6 +26,22 @@ jobs:
       - name: Generate Android platform files
         run: flutter create --platforms=android --org com.novaai .
 
+      - name: Allow first-run model download
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+          source = manifest.read_text()
+          permission = '<uses-permission android:name="android.permission.INTERNET"/>'
+          if permission not in source:
+              source = source.replace(
+                  '<application',
+                  permission + '\n    <application',
+                  1,
+              )
+          manifest.write_text(source)
+          PY
+
       - name: Get dependencies
         run: flutter pub get
 
